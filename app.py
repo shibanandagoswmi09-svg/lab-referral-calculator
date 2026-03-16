@@ -9,7 +9,7 @@ def process_data(df):
     df['Discount'] = pd.to_numeric(df['Discount'], errors='coerce').fillna(0)
     
     # --- STEP 1: GROUPING BY WORK ORDER ID ---
-    # This fixes the Dr. Soumya Chatterjee (2 cases) issue
+    # Treats multiple tests as ONE case (Solves Dr. Soumya 2-case issue)
     grouped = df.groupby('Work Order ID').agg({
         'DATE': 'first',
         'Pt. Name': 'first',
@@ -33,10 +33,10 @@ def process_data(df):
     grouped['Referral Payable'] = grouped.apply(calculate_payout, axis=1)
     return grouped
 
-st.title("🏥 Final Referral Payout System")
-st.markdown("Automated Report for **Doctors** & **Other Labs**")
+st.title("🛡️ Precision Referral Payout Dashboard")
+st.markdown("Automated Logic: **Net Amount Basis | 25% Threshold**")
 
-uploaded_file = st.file_uploader("Upload Procedure.xlsx", type=['xlsx', 'csv'])
+uploaded_file = st.file_uploader("Upload Procedure Excel", type=['xlsx', 'csv'])
 
 if uploaded_file:
     # Read Data
@@ -45,44 +45,41 @@ if uploaded_file:
     # Process
     final_df = process_data(raw_df)
 
-    # --- STEP 3: SEPARATING REPORTS ---
-    # Doctor Report: (Excluding 'SELF' and rows where 'Other Lab Refer' is NOT empty)
-    # Lab Report: (Rows where 'Other Lab Refer' has a name)
+    # --- DROPDOWN FILTERS IN SIDEBAR ---
+    st.sidebar.header("Filter Reports")
     
-    doc_report = final_df[(final_df['Doctor Name'].notna()) & 
-                          (final_df['Doctor Name'] != 'SELF') & 
-                          (final_df['Other Lab Refer'].isna() | (final_df['Other Lab Refer'] == ""))].copy()
+    # Doctor Dropdown
+    all_docs = ["All Doctors"] + sorted([str(d) for d in final_df['Doctor Name'].unique() if d and d != 'SELF'])
+    selected_doc = st.sidebar.selectbox("Select Doctor Name", all_docs)
     
+    # Lab Dropdown
+    all_labs = ["All Labs"] + sorted([str(l) for l in final_df['Other Lab Refer'].unique() if pd.notna(l) and l != ""])
+    selected_lab = st.sidebar.selectbox("Select Lab Refer", all_labs)
+
+    # --- SEPARATING REPORTS ---
+    doc_report = final_df[(final_df['Doctor Name'].notna()) & (final_df['Doctor Name'] != 'SELF')].copy()
     lab_report = final_df[final_df['Other Lab Refer'].notna() & (final_df['Other Lab Refer'] != "")].copy()
 
-    # --- UI LAYOUT ---
+    # Apply Filters
+    if selected_doc != "All Doctors":
+        doc_report = doc_report[doc_report['Doctor Name'] == selected_doc]
+    
+    if selected_lab != "All Labs":
+        lab_report = lab_report[lab_report['Other Lab Refer'] == selected_lab]
+
+    # --- UI LAYOUT WITH TABS ---
     tab1, tab2 = st.tabs(["👨‍⚕️ Doctor Referral Report", "🔬 Other Lab Referral Report"])
 
     with tab1:
-        st.subheader("Doctor-wise Settlement Summary")
-        doc_summary = doc_report.groupby('Doctor Name').agg({
-            'Work Order ID': 'count',
-            'Referral Payable': 'sum'
-        }).rename(columns={'Work Order ID': 'Total Cases'}).reset_index()
-        st.dataframe(doc_summary.style.format({'Referral Payable': '₹ {:.2f}'}))
-        
-        st.markdown("---")
-        st.write("### Detailed Audit Trail (Doctor)")
-        st.dataframe(doc_report[['DATE', 'Work Order ID', 'Pt. Name', 'Doctor Name', 'Gross Amount', 'Discount', 'Disc %', 'Referral Payable']])
+        st.subheader(f"Results for: {selected_doc}")
+        st.metric("Total Payable (Filtered)", f"₹ {doc_report['Referral Payable'].sum():,.2f}")
+        st.dataframe(doc_report[['DATE', 'Work Order ID', 'Pt. Name', 'Doctor Name', 'Gross Amount', 'Discount', 'Net Amount', 'Disc %', 'Referral Payable']])
 
     with tab2:
-        st.subheader("Lab-wise Settlement Summary")
-        lab_summary = lab_report.groupby('Other Lab Refer').agg({
-            'Work Order ID': 'count',
-            'Referral Payable': 'sum'
-        }).rename(columns={'Work Order ID': 'Total Cases'}).reset_index()
-        st.dataframe(lab_summary.style.format({'Referral Payable': '₹ {:.2f}'}))
-        
-        st.markdown("---")
-        st.write("### Detailed Audit Trail (Other Lab)")
-        st.dataframe(lab_report[['DATE', 'Work Order ID', 'Pt. Name', 'Other Lab Refer', 'Gross Amount', 'Discount', 'Disc %', 'Referral Payable']])
+        st.subheader(f"Results for: {selected_lab}")
+        st.metric("Total Payable (Filtered)", f"₹ {lab_report['Referral Payable'].sum():,.2f}")
+        st.dataframe(lab_report[['DATE', 'Work Order ID', 'Pt. Name', 'Other Lab Refer', 'Gross Amount', 'Discount', 'Net Amount', 'Disc %', 'Referral Payable']])
 
-    # Sidebar Metrics
-    st.sidebar.header("Executive Summary")
-    st.sidebar.metric("Total Doctor Payout", f"₹ {doc_report['Referral Payable'].sum():,.2f}")
-    st.sidebar.metric("Total Lab Payout", f"₹ {lab_report['Referral Payable'].sum():,.2f}")
+    # Final Export Button
+    st.sidebar.markdown("---")
+    st.sidebar.download_button("📥 Download Full Report", final_df.to_csv(index=False), "Referral_Payout_Final.csv")
