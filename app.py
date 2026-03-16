@@ -2,121 +2,89 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
-# Page configuration for a professional look
-st.set_page_config(page_title="Referral Payout Analytics", layout="wide")
+# Professional Page Config
+st.set_page_config(page_title="Referral Audit Dashboard", layout="wide")
 
-def calculate_referral(df):
-    # Ensure column names match your Excel/CSV
-    gross_col = 'Gross Amount'
-    disc_col = 'Discount'
-    
-    # Convert to numeric to avoid calculation errors
+def process_referral_data(df):
+    # Standardizing Columns
+    gross_col, disc_col = 'Gross Amount', 'Discount'
     df[gross_col] = pd.to_numeric(df[gross_col], errors='coerce').fillna(0)
     df[disc_col] = pd.to_numeric(df[disc_col], errors='coerce').fillna(0)
     
-    # Boss's Logic: Net Amount = Gross - Discount
+    # 100% Accuracy Logic: Gross - Discount = Net
     df['Calculated Net Amount'] = df[gross_col] - df[disc_col]
-    
-    # Calculate Discount Percentage
     df['Disc %'] = (df[disc_col] / df[gross_col]).fillna(0) * 100
     
-    # Referral Logic Implementation
-    def get_referral_amt(row):
-        if row['Disc %'] > 25:
-            return 0
-        else:
-            balance_perc = (25 - row['Disc %']) / 100
-            return row['Calculated Net Amount'] * balance_perc
+    # Boss's Logic: 25% Threshold
+    def calc_payout(row):
+        if row['Disc %'] > 25: return 0
+        return row['Calculated Net Amount'] * ((25 - row['Disc %']) / 100)
 
-    df['Referral Payable'] = df.apply(get_referral_amt, axis=1)
+    df['Referral Payable'] = df.apply(calc_payout, axis=1)
     return df
 
-# --- UI Header ---
-st.title("📊 Medical Referral Automation & Analytics")
-st.markdown("Automated calculation based on **Net Amount** with **25% Discount Threshold**.")
+st.title("🏥 Precision Referral Audit Dashboard")
+st.markdown("Automated System for **Doctor** and **Other Lab** Referral Reports.")
 
-uploaded_file = st.file_uploader("Upload Procedure Data (Excel/CSV)", type=['xlsx', 'csv'])
+uploaded_file = st.file_uploader("Upload Procedure Excel File", type=['xlsx', 'csv'])
 
 if uploaded_file:
     try:
-        # File Handling
-        if uploaded_file.name.endswith('.csv'):
-            df = pd.read_csv(uploaded_file)
-        else:
-            df = pd.read_excel(uploaded_file)
+        # Loading and Processing
+        raw_df = pd.read_excel(uploaded_file) if uploaded_file.name.endswith('.xlsx') else pd.read_csv(uploaded_file)
+        df = process_referral_data(raw_df)
+
+        # SEPARATION LOGIC: Creating two distinct reports
+        # 1. Doctor Referral: Where Doctor Name exists and NOT 'SELF'
+        doc_df = df[(df['Doctor Name'].notna()) & (df['Doctor Name'] != 'SELF')].copy()
+        
+        # 2. Other Lab Referral: Where 'Other Lab Refer' is not empty
+        lab_df = df[df['Other Lab Refer'].notna() & (df['Other Lab Refer'] != "")].copy()
+
+        # Tabs for clear separation as requested by Boss
+        tab1, tab2, tab3 = st.tabs(["👨‍⚕️ Doctor Referral Report", "🔬 Other Lab Referral", "📊 Consolidated Summary"])
+
+        with tab1:
+            st.header("Doctor Payout Audit")
+            doc_list = ["All Doctors"] + sorted(doc_df['Doctor Name'].unique().tolist())
+            sel_doc = st.selectbox("Filter by Doctor", doc_list)
             
-        # Process Data
-        processed_df = calculate_referral(df)
+            final_doc_df = doc_df if sel_doc == "All Doctors" else doc_df[doc_df['Doctor Name'] == sel_doc]
+            
+            # Metric for Doctor
+            st.metric("Total Payable (Doctor)", f"₹ {final_doc_df['Referral Payable'].sum():,.2f}")
+            st.dataframe(final_doc_df[['DATE', 'Pt. Name', 'Doctor Name', 'Gross Amount', 'Discount', 'Calculated Net Amount', 'Disc %', 'Referral Payable']])
 
-        # --- Dropdown Filter Section ---
-        st.sidebar.header("Filter Options")
-        
-        # 1. Doctor Name Dropdown
-        doctor_list = ["All Doctors"] + sorted(processed_df['Doctor Name'].dropna().unique().tolist())
-        selected_doctor = st.sidebar.selectbox("Select Doctor Name", doctor_list)
-        
-        # 2. Lab Refer Dropdown
-        lab_list = ["All Referrals"] + sorted(processed_df['Other Lab Refer'].dropna().unique().tolist())
-        selected_lab = st.sidebar.selectbox("Select Lab Referral", lab_list)
+        with tab2:
+            st.header("Other Lab Referral Audit")
+            lab_list = ["All Labs"] + sorted(lab_df['Other Lab Refer'].unique().tolist())
+            sel_lab = st.selectbox("Filter by Lab", lab_list)
+            
+            final_lab_df = lab_df if sel_lab == "All Labs" else lab_df[lab_df['Other Lab Refer'] == sel_lab]
+            
+            st.metric("Total Payable (Lab)", f"₹ {final_lab_df['Referral Payable'].sum():,.2f}")
+            st.dataframe(final_lab_df[['DATE', 'Pt. Name', 'Other Lab Refer', 'Gross Amount', 'Discount', 'Calculated Net Amount', 'Disc %', 'Referral Payable']])
 
-        # Apply Filters to the Dataframe
-        filtered_df = processed_df.copy()
-        if selected_doctor != "All Doctors":
-            filtered_df = filtered_df[filtered_df['Doctor Name'] == selected_doctor]
-        if selected_lab != "All Referrals":
-            filtered_df = filtered_df[filtered_df['Other Lab Refer'] == selected_lab]
+        with tab3:
+            st.header("Executive Summary")
+            c1, c2 = st.columns(2)
+            with c1:
+                st.subheader("Top 10 Doctors by Payout")
+                fig = px.bar(doc_df.groupby('Doctor Name')['Referral Payable'].sum().nlargest(10).reset_index(), 
+                             x='Referral Payable', y='Doctor Name', orientation='h', color_continuous_scale='Blues')
+                st.plotly_chart(fig)
+            with c2:
+                st.subheader("Payout Distribution")
+                pie_data = pd.DataFrame({
+                    'Category': ['Doctor Referral', 'Other Lab Referral'],
+                    'Amount': [doc_df['Referral Payable'].sum(), lab_df['Referral Payable'].sum()]
+                })
+                st.plotly_chart(px.pie(pie_data, names='Category', values='Amount', hole=0.4))
 
-        # --- Metrics Row ---
-        st.markdown(f"### Key Performance Indicators: {selected_doctor if selected_doctor != 'All Doctors' else 'Overall'}")
-        m1, m2, m3, m4 = st.columns(4)
-        
-        total_gross = filtered_df['Gross Amount'].sum()
-        total_net = filtered_df['Calculated Net Amount'].sum()
-        total_ref = filtered_df['Referral Payable'].sum()
-        eligible_cases = len(filtered_df[filtered_df['Referral Payable'] > 0])
-        
-        m1.metric("Total Gross Amount", f"₹ {total_gross:,.2f}")
-        m2.metric("Total Net Amount", f"₹ {total_net:,.2f}")
-        m3.metric("Total Referral Payout", f"₹ {total_ref:,.2f}")
-        m4.metric("Eligible Referrals", f"{eligible_cases} Cases")
-
-        st.markdown("---")
-
-        # --- Dashboard Charts ---
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("Top Payouts")
-            # Showing Top 10 from the current selection
-            doc_data = filtered_df.groupby('Doctor Name')['Referral Payable'].sum().nlargest(10).reset_index()
-            fig1 = px.bar(doc_data, x='Referral Payable', y='Doctor Name', orientation='h', 
-                          color='Referral Payable', color_continuous_scale='Blues',
-                          labels={'Referral Payable': 'Payable Amount (₹)', 'Doctor Name': 'Doctor'})
-            st.plotly_chart(fig1, use_container_width=True)
-
-        with col2:
-            st.subheader("Payout Eligibility Split")
-            filtered_df['Eligibility'] = filtered_df['Referral Payable'].apply(lambda x: 'Payable' if x > 0 else 'Non-Payable (>25% Disc)')
-            fig2 = px.pie(filtered_df, names='Eligibility', values='Calculated Net Amount', hole=0.5,
-                          color_discrete_map={'Payable':'#2ecc71', 'Non-Payable (>25% Disc)':'#e74c3c'})
-            st.plotly_chart(fig2, use_container_width=True)
-
-        # --- Detailed Report ---
-        st.subheader("Detailed Audit Report")
-        display_cols = ['DATE', 'Pt. Name', 'Doctor Name', 'Other Lab Refer', 'Gross Amount', 'Discount', 'Calculated Net Amount', 'Disc %', 'Referral Payable']
-        st.dataframe(filtered_df[display_cols].style.format({'Disc %': '{:.2f}%', 'Referral Payable': '{:.2f}'}))
-
-        # --- Export Section ---
-        st.markdown("---")
-        csv = filtered_df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="📥 Download This Filtered Report",
-            data=csv,
-            file_name=f"Referral_Report_{selected_doctor}.csv",
-            mime="text/csv",
-        )
-        st.success("System Processed Successfully. Accuracy: 100%")
+        # Download Buttons
+        st.sidebar.markdown("### Export Reports")
+        st.sidebar.download_button("Download Doctor Report", doc_df.to_csv(index=False).encode('utf-8'), "Doctor_Referral.csv")
+        st.sidebar.download_button("Download Lab Report", lab_df.to_csv(index=False).encode('utf-8'), "Lab_Referral.csv")
 
     except Exception as e:
-        st.error(f"Data Processing Error: {str(e)}")
-        st.info("Check if your file has 'Gross Amount', 'Discount', and 'Doctor Name' columns.")
+        st.error(f"Error: {e}")
