@@ -3,13 +3,12 @@ import pandas as pd
 
 st.set_page_config(page_title="Referral Audit Dashboard", layout="wide")
 
-def process_data(df):
+def process_data(df, master_doc_list):
     # Standardizing numeric columns
     df['Gross Amount'] = pd.to_numeric(df['Gross Amount'], errors='coerce').fillna(0)
     df['Discount'] = pd.to_numeric(df['Discount'], errors='coerce').fillna(0)
     
     # --- STEP 1: GROUPING BY WORK ORDER ID ---
-    # Treats multiple tests as ONE case (Solves Dr. Soumya 2-case issue)
     grouped = df.groupby('Work Order ID').agg({
         'DATE': 'first',
         'Pt. Name': 'first',
@@ -23,7 +22,18 @@ def process_data(df):
     grouped['Net Amount'] = grouped['Gross Amount'] - grouped['Discount']
     grouped['Disc %'] = (grouped['Discount'] / grouped['Gross Amount']).fillna(0) * 100
     
+    # Exclude logic for MARCH ENT Doctors
+    excluded_doctors = ['DR. ARJUN DASGUPTA', 'DR. CHIRANJIT DUTTA', 'DR. NVK MOHAN']
+    
     def calculate_payout(row):
+        doc_name = str(row['Doctor Name']).strip().upper()
+        # Condition 1: Must be in Master List (Sheet 2)
+        # Condition 2: Must NOT be in March ENT excluded list
+        # Condition 3: Not Rohit Rungta
+        if doc_name not in master_doc_list or doc_name in excluded_doctors or "ROHIT RUNGTA" in doc_name:
+            return 0
+        
+        # Condition 4: 25% Discount Threshold
         if row['Disc %'] > 25:
             return 0
         else:
@@ -33,53 +43,43 @@ def process_data(df):
     grouped['Referral Payable'] = grouped.apply(calculate_payout, axis=1)
     return grouped
 
-st.title("🛡️ Precision Referral Payout Dashboard")
-st.markdown("Automated Logic: **Net Amount Basis | 25% Threshold**")
+st.title("🛡️ Final Precision Referral Dashboard")
 
-uploaded_file = st.file_uploader("Upload Procedure Excel", type=['xlsx', 'csv'])
+uploaded_file = st.file_uploader("Upload Procedure Excel", type=['xlsx'])
 
 if uploaded_file:
-    # Read Data
-    raw_df = pd.read_excel(uploaded_file) if uploaded_file.name.endswith('.xlsx') else pd.read_csv(uploaded_file)
-    
-    # Process
-    final_df = process_data(raw_df)
+    try:
+        # Load all sheets
+        xls = pd.ExcelFile(uploaded_file)
+        raw_df = pd.read_excel(xls, sheet_name='Doc Ref.')
+        doc_name_df = pd.read_excel(xls, sheet_name='Doc Name') # Sheet 2
+        
+        # Prepare Master Doctor List from Sheet 2 (Cleaning names)
+        # Assuming names are in the second column or specific header
+        master_docs = doc_name_df.iloc[:, 1].dropna().astype(str).str.strip().str.upper().tolist()
+        
+        # Remove Rohit Rungta from the master list calculation as requested
+        if "ROHIT RUNGTA" in master_docs: master_docs.remove("ROHIT RUNGTA")
 
-    # --- DROPDOWN FILTERS IN SIDEBAR ---
-    st.sidebar.header("Filter Reports")
-    
-    # Doctor Dropdown
-    all_docs = ["All Doctors"] + sorted([str(d) for d in final_df['Doctor Name'].unique() if d and d != 'SELF'])
-    selected_doc = st.sidebar.selectbox("Select Doctor Name", all_docs)
-    
-    # Lab Dropdown
-    all_labs = ["All Labs"] + sorted([str(l) for l in final_df['Other Lab Refer'].unique() if pd.notna(l) and l != ""])
-    selected_lab = st.sidebar.selectbox("Select Lab Refer", all_labs)
+        # Process
+        final_df = process_data(raw_df, master_docs)
 
-    # --- SEPARATING REPORTS ---
-    doc_report = final_df[(final_df['Doctor Name'].notna()) & (final_df['Doctor Name'] != 'SELF')].copy()
-    lab_report = final_df[final_df['Other Lab Refer'].notna() & (final_df['Other Lab Refer'] != "")].copy()
+        # --- SEPARATING REPORTS ---
+        doc_report = final_df[(final_df['Doctor Name'].notna()) & (final_df['Doctor Name'] != 'SELF')].copy()
+        lab_report = final_df[final_df['Other Lab Refer'].notna() & (final_df['Other Lab Refer'] != "")].copy()
 
-    # Apply Filters
-    if selected_doc != "All Doctors":
-        doc_report = doc_report[doc_report['Doctor Name'] == selected_doc]
-    
-    if selected_lab != "All Labs":
-        lab_report = lab_report[lab_report['Other Lab Refer'] == selected_lab]
+        # UI TABS
+        tab1, tab2 = st.tabs(["👨‍⚕️ Doctor Payout Audit", "🔬 Lab Referral Audit"])
 
-    # --- UI LAYOUT WITH TABS ---
-    tab1, tab2 = st.tabs(["👨‍⚕️ Doctor Referral Report", "🔬 Other Lab Referral Report"])
+        with tab1:
+            st.subheader("Verified Doctor Referrals (Based on Sheet 2 List)")
+            st.metric("Total Payable", f"₹ {doc_report['Referral Payable'].sum():,.2f}")
+            st.dataframe(doc_report)
 
-    with tab1:
-        st.subheader(f"Results for: {selected_doc}")
-        st.metric("Total Payable (Filtered)", f"₹ {doc_report['Referral Payable'].sum():,.2f}")
-        st.dataframe(doc_report[['DATE', 'Work Order ID', 'Pt. Name', 'Doctor Name', 'Gross Amount', 'Discount', 'Net Amount', 'Disc %', 'Referral Payable']])
+        with tab2:
+            st.subheader("Other Lab Referrals")
+            st.metric("Total Payable", f"₹ {lab_report['Referral Payable'].sum():,.2f}")
+            st.dataframe(lab_report)
 
-    with tab2:
-        st.subheader(f"Results for: {selected_lab}")
-        st.metric("Total Payable (Filtered)", f"₹ {lab_report['Referral Payable'].sum():,.2f}")
-        st.dataframe(lab_report[['DATE', 'Work Order ID', 'Pt. Name', 'Other Lab Refer', 'Gross Amount', 'Discount', 'Net Amount', 'Disc %', 'Referral Payable']])
-
-    # Final Export Button
-    st.sidebar.markdown("---")
-    st.sidebar.download_button("📥 Download Full Report", final_df.to_csv(index=False), "Referral_Payout_Final.csv")
+    except Exception as e:
+        st.error(f"Error: Ensure sheet names 'Doc Ref.' and 'Doc Name' are correct. {e}")
