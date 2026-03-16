@@ -1,13 +1,15 @@
 import streamlit as st
 import pandas as pd
 
-def process_and_audit(df):
-    # Numeric conversion
+st.set_page_config(page_title="Referral Audit Dashboard", layout="wide")
+
+def process_data(df):
+    # Standardizing numeric columns
     df['Gross Amount'] = pd.to_numeric(df['Gross Amount'], errors='coerce').fillna(0)
     df['Discount'] = pd.to_numeric(df['Discount'], errors='coerce').fillna(0)
     
-    # --- STEP 1: GROUPING BY WORK ORDER ID (The "Fix") ---
-    # This ensures multiple investigations for one patient become ONE case
+    # --- STEP 1: GROUPING BY WORK ORDER ID ---
+    # This fixes the Dr. Soumya Chatterjee (2 cases) issue
     grouped = df.groupby('Work Order ID').agg({
         'DATE': 'first',
         'Pt. Name': 'first',
@@ -17,7 +19,7 @@ def process_and_audit(df):
         'Discount': 'sum'
     }).reset_index()
 
-    # --- STEP 2: APPLYING LOGIC ON GROUPED DATA ---
+    # --- STEP 2: APPLYING BOSS'S LOGIC ---
     grouped['Net Amount'] = grouped['Gross Amount'] - grouped['Discount']
     grouped['Disc %'] = (grouped['Discount'] / grouped['Gross Amount']).fillna(0) * 100
     
@@ -25,39 +27,62 @@ def process_and_audit(df):
         if row['Disc %'] > 25:
             return 0
         else:
-            # Referral = (25% - Actual Disc %) of Net Amount
             balance_perc = (25 - row['Disc %']) / 100
             return row['Net Amount'] * balance_perc
 
     grouped['Referral Payable'] = grouped.apply(calculate_payout, axis=1)
     return grouped
 
-st.title("🛡️ 100% Accurate Case-Based Auditor")
+st.title("🏥 Final Referral Payout System")
+st.markdown("Automated Report for **Doctors** & **Other Labs**")
 
-uploaded_file = st.file_uploader("Upload Procedure File", type=['xlsx', 'csv'])
+uploaded_file = st.file_uploader("Upload Procedure.xlsx", type=['xlsx', 'csv'])
 
 if uploaded_file:
-    # Read data
+    # Read Data
     raw_df = pd.read_excel(uploaded_file) if uploaded_file.name.endswith('.xlsx') else pd.read_csv(uploaded_file)
     
     # Process
-    final_report = process_and_audit(raw_df)
+    final_df = process_data(raw_df)
 
-    # Filtering for Doctor Report (Excluding SELF)
-    doc_report = final_report[(final_report['Doctor Name'].notna()) & (final_report['Doctor Name'] != 'SELF')].copy()
-
-    # Checking Dr. Soumya Chatterjee specifically
-    soumya_data = doc_report[doc_report['Doctor Name'].str.contains('SOUMYA CHATTERJEE', na=False)]
+    # --- STEP 3: SEPARATING REPORTS ---
+    # Doctor Report: (Excluding 'SELF' and rows where 'Other Lab Refer' is NOT empty)
+    # Lab Report: (Rows where 'Other Lab Refer' has a name)
     
-    st.subheader("Summary for Boss")
-    col1, col2 = st.columns(2)
-    col1.metric("Total Unique Cases", len(doc_report))
-    col2.metric("Total Payout", f"₹ {doc_report['Referral Payable'].sum():,.2f}")
+    doc_report = final_df[(final_df['Doctor Name'].notna()) & 
+                          (final_df['Doctor Name'] != 'SELF') & 
+                          (final_df['Other Lab Refer'].isna() | (final_df['Other Lab Refer'] == ""))].copy()
+    
+    lab_report = final_df[final_df['Other Lab Refer'].notna() & (final_df['Other Lab Refer'] != "")].copy()
 
-    st.markdown("---")
-    st.write("### Verified Case Count (Dr. Soumya Chatterjee)")
-    st.write(f"Confirmed Unique Cases: **{len(soumya_data)}**") # Ekhone '2' dekhabe
-    st.dataframe(soumya_data)
+    # --- UI LAYOUT ---
+    tab1, tab2 = st.tabs(["👨‍⚕️ Doctor Referral Report", "🔬 Other Lab Referral Report"])
 
-    st.markdown("### Full Doctor Report")
-    st.dataframe(doc_report[['DATE', 'Work Order ID', 'Pt. Name', 'Doctor Name', 'Gross Amount', 'Discount', 'Net Amount', 'Disc %', 'Referral Payable']])
+    with tab1:
+        st.subheader("Doctor-wise Settlement Summary")
+        doc_summary = doc_report.groupby('Doctor Name').agg({
+            'Work Order ID': 'count',
+            'Referral Payable': 'sum'
+        }).rename(columns={'Work Order ID': 'Total Cases'}).reset_index()
+        st.dataframe(doc_summary.style.format({'Referral Payable': '₹ {:.2f}'}))
+        
+        st.markdown("---")
+        st.write("### Detailed Audit Trail (Doctor)")
+        st.dataframe(doc_report[['DATE', 'Work Order ID', 'Pt. Name', 'Doctor Name', 'Gross Amount', 'Discount', 'Disc %', 'Referral Payable']])
+
+    with tab2:
+        st.subheader("Lab-wise Settlement Summary")
+        lab_summary = lab_report.groupby('Other Lab Refer').agg({
+            'Work Order ID': 'count',
+            'Referral Payable': 'sum'
+        }).rename(columns={'Work Order ID': 'Total Cases'}).reset_index()
+        st.dataframe(lab_summary.style.format({'Referral Payable': '₹ {:.2f}'}))
+        
+        st.markdown("---")
+        st.write("### Detailed Audit Trail (Other Lab)")
+        st.dataframe(lab_report[['DATE', 'Work Order ID', 'Pt. Name', 'Other Lab Refer', 'Gross Amount', 'Discount', 'Disc %', 'Referral Payable']])
+
+    # Sidebar Metrics
+    st.sidebar.header("Executive Summary")
+    st.sidebar.metric("Total Doctor Payout", f"₹ {doc_report['Referral Payable'].sum():,.2f}")
+    st.sidebar.metric("Total Lab Payout", f"₹ {lab_report['Referral Payable'].sum():,.2f}")
