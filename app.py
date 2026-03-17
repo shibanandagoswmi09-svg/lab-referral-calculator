@@ -3,30 +3,30 @@ import pandas as pd
 import re
 import plotly.express as px
 
-# নাম এবং ডাটা ক্লিন করার জন্য শক্তিশালী ফাংশন
+# নাম একদম নিখুঁতভাবে এক করার ফাংশন (N.V.K. MOHAN -> NVKMOHAN)
 def super_clean(text):
     if pd.isna(text): return ""
     # Dr. ডট, স্পেস সব বাদ দিয়ে শুধু ক্যাপিটাল লেটার রাখবে
-    # যেমন: "N.V.K. MOHAN" হয়ে যাবে "NVKMOHAN"
     text = re.sub(r'^(dr\.|dr|dr )', '', str(text), flags=re.IGNORECASE)
     cleaned = re.sub(r'[^A-Z]', '', text.upper()) 
     return cleaned
 
-st.set_page_config(page_title="Doctor Referral Analytics", layout="wide")
-st.title("📊 Accurate Doctor Referral System")
+st.set_page_config(page_title="Doctor Referral Pro", layout="wide")
+st.title("📊 Finalized Doctor Referral Analytics")
 st.markdown("---")
 
-uploaded_file = st.file_uploader("Upload 'Procedure.xlsx' (3 Sheets)", type=["xlsx"])
+uploaded_file = st.file_uploader("Upload your 'Procedure.xlsx' file", type=["xlsx"])
 
 if uploaded_file:
     try:
+        # সব শিট লোড করা হচ্ছে
         all_sheets = pd.read_excel(uploaded_file, sheet_name=None)
         combined_data = []
 
         for sheet_name, df in all_sheets.items():
             df.columns = [str(c).strip() for c in df.columns]
             
-            # কলাম ম্যাপিং
+            # স্মার্ট কলাম ম্যাপিং
             doc_col = next((c for c in df.columns if 'doc' in c.lower()), None)
             gross_col = next((c for c in df.columns if 'gross' in c.lower()), None)
             disc_col = next((c for c in df.columns if 'disc' in c.lower()), None)
@@ -39,50 +39,46 @@ if uploaded_file:
                 temp_df['Gross'] = pd.to_numeric(df[gross_col], errors='coerce').fillna(0)
                 temp_df['Disc'] = pd.to_numeric(df[disc_col], errors='coerce').fillna(0) if disc_col else 0
                 temp_df['Dept_Original'] = df[dept_col] if dept_col else "Unknown"
-                temp_df['Dept_Cleaned'] = temp_df['Dept_Original'].astype(str).apply(super_clean)
                 temp_df['Sheet_Source'] = sheet_name
                 combined_data.append(temp_df)
 
         if combined_data:
             final_df = pd.concat(combined_data, ignore_index=True)
 
-            # --- ১. এক্সক্লুশন ফিল্টার (নাম বাদ দেওয়া) ---
-            # Rohit Ghutgutiya এবং Rohit Rungta (বানান যাই হোক ক্লিন করে চেক করবে)
-            exclude_ids = ["ROHITGHUTGUTIYA", "ROHITRUNGTA", "ROHITRUNQTA"]
-            final_df = final_df[~final_df['Doctor_ID'].isin(exclude_ids)]
+            # --- ১. এক্সক্লুশন: এই দুজনকে রিপোর্টেই রাখা হবে না ---
+            exclude_completely = ["ROHITGHUTGUTIYA", "ROHITRUNGTA", "ROHITRUNQTA"]
+            final_df = final_df[~final_df['Doctor_ID'].isin(exclude_completely)]
 
             # ২. ক্যালকুলেশন লজিক
             final_df['Net Amount'] = final_df['Gross'] - final_df['Disc']
+            # Discount % বের করা (০ দিয়ে ভাগ হওয়া আটকাতে replace ব্যবহার)
             final_df['Discount_Pct'] = (final_df['Disc'] / final_df['Gross'].replace(0, 1)) * 100
 
             def calculate_referral(row):
-                # MARCH ENT এর আন্ডারে থাকা ৩ জন স্পেশাল ডাক্তার
-                special_docs = ["ARJUNDASGUPTA", "CHIRAJITDUTTA", "NVKMOHAN"]
-                dept_str = row['Dept_Cleaned']
+                # কন্ডিশন ১: এই ৩ জন ডাক্তার কোনো অবস্থাতেই রেফারাল পাবেন না
+                # (MARCH ENT লেখা থাকুক বা না থাকুক)
+                strict_zero_docs = ["NVKMOHAN", "ARJUNDASGUPTA", "CHIRAJITDUTTA"]
                 
-                # N V K Mohan বা N.V.K. Mohan যাই হোক, 'NVKMOHAN' হিসেবে চেক হবে
-                is_special_doc = row['Doctor_ID'] in special_docs
-                is_excluded_dept = ("MARCH" in dept_str) or ("ENT" in dept_str)
-                
-                if is_excluded_dept and is_special_doc:
+                if row['Doctor_ID'] in strict_zero_docs:
                     return 0.0
 
-                # সাধারণ লজিক: ২৫% ডিসকাউন্ট থ্রেশহোল্ড
+                # কন্ডিশন ২: ২৫% এর বেশি ডিসকাউন্ট হলে ০
                 if row['Discount_Pct'] > 25:
                     return 0.0
                 else:
-                    # ব্যালেন্স পার্সেন্টেজ ক্যালকুলেশন
-                    balance_pct = (25 - row['Discount_Pct']) / 100
-                    return row['Net Amount'] * balance_pct
+                    # কন্ডিশন ৩: ২৫% এর কম হলে ব্যালেন্স পার্সেন্টেজ (যেমন: ১০% ডিসকাউন্ট দিলে বাকি ১৫% পাবে)
+                    balance_percentage = (25 - row['Discount_Pct']) / 100
+                    return row['Net Amount'] * balance_percentage
 
             final_df['Referral'] = final_df.apply(calculate_referral, axis=1)
 
             # --- ৩. ড্রপডাউন এবং ড্যাশবোর্ড UI ---
             st.sidebar.header("Navigation")
-            doc_list = ["Show All Summary"] + sorted(final_df['Original_Name'].dropna().unique().tolist())
-            selected_doc = st.sidebar.selectbox("🔍 Select Doctor to View Details:", doc_list)
+            doc_list = ["All Doctors Summary"] + sorted(final_df['Original_Name'].dropna().unique().tolist())
+            selected_doc = st.sidebar.selectbox("🔍 Select Doctor:", doc_list)
 
-            if selected_doc == "Show All Summary":
+            # ফিল্টারিং
+            if selected_doc == "All Doctors Summary":
                 display_df = final_df
             else:
                 display_df = final_df[final_df['Original_Name'] == selected_doc]
@@ -93,24 +89,20 @@ if uploaded_file:
             c2.metric("Total Net Billing", f"₹ {display_df['Net Amount'].sum():,.2f}")
             c3.metric("Final Payable Referral", f"₹ {display_df['Referral'].sum():,.2f}")
 
+            # --- ৪. ভিজ্যুয়ালাইজেশন (Charts) ---
             st.divider()
-
-            # ৪. ভিজ্যুয়ালাইজেশন (Charts)
             col_chart1, col_chart2 = st.columns(2)
             
             with col_chart1:
-                st.subheader("Top Referrals Breakdown")
-                if selected_doc == "Show All Summary":
-                    top_docs = final_df.groupby('Original_Name')['Referral'].sum().nlargest(10).reset_index()
-                    fig = px.bar(top_docs, x='Referral', y='Original_Name', orientation='h', color='Referral', color_continuous_scale='Reds')
-                else:
-                    sheet_dist = display_df.groupby('Sheet_Source')['Referral'].sum().reset_index()
-                    fig = px.pie(sheet_dist, values='Referral', names='Sheet_Source', hole=0.4)
-                st.plotly_chart(fig, use_container_width=True)
+                st.subheader("Top Referrals (Overall)")
+                top_data = final_df.groupby('Original_Name')['Referral'].sum().nlargest(10).reset_index()
+                fig1 = px.bar(top_data, x='Referral', y='Original_Name', orientation='h', color='Referral', color_continuous_scale='Turbo')
+                st.plotly_chart(fig1, use_container_width=True)
 
             with col_chart2:
-                st.subheader("Referral vs Discount Analysis")
-                fig2 = px.scatter(display_df, x='Discount_Pct', y='Referral', size='Gross', color='Sheet_Source', hover_name='Original_Name')
+                st.subheader("Payout Distribution")
+                pie_data = display_df.groupby('Sheet_Source')['Referral'].sum().reset_index()
+                fig2 = px.pie(pie_data, values='Referral', names='Sheet_Source', hole=0.4)
                 st.plotly_chart(fig2, use_container_width=True)
 
             # ৫. বিস্তারিত ডাটা টেবিল
@@ -122,8 +114,13 @@ if uploaded_file:
             )
 
             # ৬. ডাউনলোড বাটন
-            summary_final = final_df.groupby('Original_Name').agg({'Gross':'sum', 'Net Amount':'sum', 'Referral':'sum'}).reset_index().sort_values('Referral', ascending=False)
-            st.download_button("📥 Download Summary CSV", summary_final.to_csv(index=False).encode('utf-8'), "Doctor_Payout_Final.csv", "text/csv")
+            summary_final = final_df.groupby('Original_Name').agg({
+                'Gross':'sum', 
+                'Net Amount':'sum', 
+                'Referral':'sum'
+            }).reset_index().sort_values('Referral', ascending=False)
+            
+            st.download_button("📥 Download Full Summary CSV", summary_final.to_csv(index=False).encode('utf-8'), "Final_Referral_Report.csv", "text/csv")
 
     except Exception as e:
-        st.error(f"Error occurred: {e}")
+        st.error(f"Error: {e}")
