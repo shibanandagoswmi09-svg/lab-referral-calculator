@@ -3,99 +3,94 @@ import pandas as pd
 import re
 import plotly.express as px
 
-# নাম ক্লিন করার ফাংশন (Dr. বা DR. বাদ দিয়ে বড় হাতের করা)
+# নাম ক্লিন করার ফাংশন
 def clean_name(name):
     if pd.isna(name): return ""
-    # Dr. / DR. / DR / Dr (স্পেস বা ডট সহ) রিমুভ করবে
+    # Dr. বা DR. বা ডট/স্পেস বাদ দিয়ে শুধু নাম রাখবে
     cleaned = re.sub(r'^(dr\.|dr|dr )', '', str(name), flags=re.IGNORECASE).strip()
     return cleaned.upper()
 
 st.set_page_config(page_title="Referral Calculator", layout="wide")
-st.title("🩺 Doctor Referral Payout System")
+st.title("🩺 Clinical Referral Payout Dashboard")
+st.info("এই অ্যাপটি 'Doc Name' (২য় শিট) এর ওপর ভিত্তি করে রিপোর্ট তৈরি করবে।")
 
-uploaded_file = st.file_uploader("আপনার এক্সেল ফাইলটি আপলোড করুন", type=["xlsx"])
+uploaded_file = st.file_uploader("আপনার 'Procedure.xlsx' ফাইলটি আপলোড করুন", type=["xlsx"])
 
 if uploaded_file:
     try:
-        # ২য় শিট লোড করা (index 1)
-        df = pd.read_excel(uploaded_file, sheet_name=1)
-        
+        # ২য় শিট লোড করা (শিট ইনডেক্স ১ মানে ২য় শিট)
+        # শিটের নাম 'Doc Name' হলেও এটি কাজ করবে
+        df = pd.read_excel(uploaded_file, sheet_name=1) 
+
         # কলামের নামের স্পেস ক্লিন করা
         df.columns = [str(c).strip() for c in df.columns]
 
-        # আপনার দেওয়া নির্দিষ্ট কলামের নাম
-        doc_col = "DOC LIST FOR DOC PAYOUT"
-        dept_col = "Department" # যদি অন্য নাম হয়, এখানে বদলে দিন
-        gross_col = "Gross Amount"
-        disc_col = "Discount"
+        # আপনার ফাইলের আসল কলাম ম্যাপ
+        doc_col = "Doc. Name"
+        dept_col = "Department" 
+        gross_col = "GROSS"
+        disc_col = "DISC."
 
-        # চেক করা কলামগুলো আছে কি না
-        if doc_col not in df.columns:
-            st.error(f"ভুল: ফাইলে '{doc_col}' নামের কোনো কলাম পাওয়া যায়নি!")
-            st.write("ফাইলে এই কলামগুলো আছে:", list(df.columns))
+        # প্রয়োজনীয় কলামগুলো আছে কি না চেক
+        if doc_col not in df.columns or gross_col not in df.columns:
+            st.error(f"ভুল: ২য় শিটে '{doc_col}' বা '{gross_col}' কলাম খুঁজে পাওয়া যায়নি।")
+            st.write("বর্তমান কলামগুলো:", list(df.columns))
         else:
-            # ১. নাম ঠিক করা
-            df['Cleaned_Doctor'] = df[doc_col].apply(clean_name)
-            
-            # ২. রোহিত রুংটাকে বাদ দেওয়া
-            df = df[df['Cleaned_Doctor'] != "ROHIT RUNGTA"]
-            
-            # ৩. ক্যালকুলেশন লজিক
-            # ০ দিয়ে ভাগ হওয়া আটকাতে fillna ব্যবহার করা
+            # ডাটা প্রসেসিং
             df[gross_col] = pd.to_numeric(df[gross_col], errors='coerce').fillna(0)
             df[disc_col] = pd.to_numeric(df[disc_col], errors='coerce').fillna(0)
             
-            df['Net Amount'] = df[gross_col] - df[disc_col]
+            df['Cleaned_Doctor'] = df[doc_col].apply(clean_name)
             
-            # ডিসকাউন্ট পার্সেন্টেজ বের করা
+            # ১. রোহিত রুংটাকে বাদ দেওয়া
+            df = df[df['Cleaned_Doctor'] != "ROHIT RUNGTA"]
+            
+            # ২. ক্যালকুলেশন লজিক
+            df['Net Amount'] = df[gross_col] - df[disc_col]
             df['Discount_Pct'] = (df[disc_col] / df[gross_col].replace(0, 1)) * 100
             
             def calculate_referral(row):
                 # MARCH ENT এক্সক্লুশন লিস্ট
                 excluded_docs = ["ARJUN DASGUPTA", "CHIRAJIT DUTTA", "NVK MOHAN"]
+                current_dept = str(row.get(dept_col, "")).upper().strip()
                 
-                # যদি Department কলাম থাকে তবেই চেক করবে
-                current_dept = str(row.get(dept_col, "")).upper()
-                
-                if current_dept == "MARCH ENT" and row['Cleaned_Doctor'] in excluded_docs:
+                # কন্ডিশন: MARCH ENT এর আন্ডারে ওই ৩ জন হলে ০
+                if "MARCH ENT" in current_dept and row['Cleaned_Doctor'] in excluded_docs:
                     return 0
                 
-                # ২৫% ডিসকাউন্ট লজিক
+                # কন্ডিশন: ২৫% এর বেশি ডিসকাউন্ট হলে ০
                 if row['Discount_Pct'] > 25:
                     return 0
                 else:
-                    # ব্যালেন্স পার্সেন্টেজ অন নেট অ্যামাউন্ট
+                    # ২৫% এর বাকি অংশ রেফারাল
                     balance_pct = (25 - row['Discount_Pct']) / 100
                     return row['Net Amount'] * balance_pct
 
             df['Referral Amount'] = df.apply(calculate_referral, axis=1)
 
-            # --- ভিজ্যুয়ালাইজেশন ---
+            # --- ড্যাশবোর্ড ডিসপ্লে ---
             st.divider()
-            c1, c2 = st.columns(2)
-            
-            with c1:
-                st.subheader("Top 10 Referral Earners")
-                top_docs = df.groupby(doc_col)['Referral Amount'].sum().reset_index().sort_values(by='Referral Amount', ascending=False).head(10)
-                fig = px.bar(top_docs, x='Referral Amount', y=doc_col, orientation='h', color='Referral Amount')
-                st.plotly_chart(fig, use_container_width=True)
-                
-            with c2:
-                st.subheader("Summary Table")
-                total_referral = df['Referral Amount'].sum()
-                st.metric("Total Payout", f"₹ {total_referral:,.2f}")
-                st.write(f"Total Entries: {len(df)}")
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Total Gross", f"₹ {df[gross_col].sum():,.2f}")
+            m2.metric("Total Net", f"₹ {df['Net Amount'].sum():,.2f}")
+            m3.metric("Total Payout", f"₹ {df['Referral Amount'].sum():,.2f}", delta_color="normal")
 
-            # ডেটা ডিসপ্লে
-            st.subheader("Final Processed Report")
-            display_cols = [doc_col, gross_col, disc_col, 'Net Amount', 'Referral Amount']
-            if dept_col in df.columns: display_cols.insert(1, dept_col)
-            
-            st.dataframe(df[display_cols].style.format({'Referral Amount': '{:.2f}', 'Net Amount': '{:.2f}'}), use_container_width=True)
+            # চার্ট: ডাক্তার ভিত্তিক পে-আউট
+            st.subheader("Doctor-wise Payout Analysis")
+            doc_chart_data = df.groupby(doc_col)['Referral Amount'].sum().reset_index()
+            fig = px.bar(doc_chart_data.nlargest(15, 'Referral Amount'), 
+                         x='Referral Amount', y=doc_col, orientation='h', 
+                         color='Referral Amount', color_continuous_scale='Greens')
+            st.plotly_chart(fig, use_container_width=True)
 
-            # ডাউনলোড বাটন
-            csv = df[display_cols].to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Download Excel/CSV Report", csv, "doctor_payout_report.csv", "text/csv")
+            # মেইন টেবিল
+            st.subheader("Final Processed Data")
+            final_df = df[[doc_col, dept_col, gross_col, disc_col, 'Net Amount', 'Referral Amount']]
+            st.dataframe(final_df.style.format(precision=2), use_container_width=True)
+
+            # ডাউনলোড
+            csv = final_df.to_csv(index=False).encode('utf-8')
+            st.download_button("📥 ডাউনলোড কমপ্লিট রিপোর্ট (CSV)", csv, "Referral_Report.csv", "text/csv")
 
     except Exception as e:
-        st.error(f"ফাইল প্রসেস করতে সমস্যা হয়েছে: {e}")
+        st.error(f"ফাইলটি পড়তে সমস্যা হয়েছে। নিশ্চিত করুন এটি সঠিক Excel ফাইল। এরর: {e}")
